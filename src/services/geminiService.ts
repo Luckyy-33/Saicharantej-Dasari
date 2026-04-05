@@ -22,6 +22,62 @@ export async function summarizeProject(title: string, description: string): Prom
   }
 }
 
+export async function getLatestIndustryUpdates(): Promise<{text: string, sources: any[]}> {
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: "What are the latest developments, news, and trends in Generative AI for Fintech, Banking, and Compliance? Provide a concise 2-paragraph summary.",
+      config: {
+        tools: [{ googleSearch: {} }],
+      }
+    });
+
+    const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+    
+    return {
+      text: response.text || "Could not fetch updates.",
+      sources: chunks
+    };
+  } catch (error) {
+    console.error("Error fetching updates:", error);
+    return { text: "Error fetching latest updates. Please try again later.", sources: [] };
+  }
+}
+
+export async function estimateProjectFeasibility(difficulty: string, duration: string, skills: string[]): Promise<{score: number, explanation: string} | null> {
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: `Estimate the feasibility of a project based on the following factors:
+      - Difficulty Level: ${difficulty}
+      - Estimated Duration: ${duration}
+      - Required Skills: ${skills.join(", ")}
+
+      Calculate a feasibility score on a scale of 1-5 (1 = very low feasibility/high risk, 5 = very high feasibility/low risk).
+      Provide a brief explanation (2-3 sentences) justifying the score, referencing which factors positively or negatively impacted it.`,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            score: { type: Type.NUMBER, description: "Feasibility score from 1 to 5" },
+            explanation: { type: Type.STRING, description: "2-3 sentence explanation justifying the score" }
+          },
+          required: ["score", "explanation"]
+        }
+      }
+    });
+
+    if (response.text) {
+      return JSON.parse(response.text);
+    }
+    return null;
+  } catch (error) {
+    console.error("Error estimating feasibility:", error);
+    return null;
+  }
+}
+
 export async function generateProjectTags(title: string, description: string, milestones: string[]): Promise<string[]> {
   try {
     const response = await ai.models.generateContent({

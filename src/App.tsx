@@ -23,11 +23,13 @@ import {
   ChevronDown,
   ChevronUp,
   Calendar,
-  Layers
+  Layers,
+  Activity,
+  Star
 } from 'lucide-react';
 import { ROADMAP_DATA } from './constants';
 import { Milestone, Project, ProjectMilestone } from './types';
-import { summarizeProject, generateProjectTags } from './services/geminiService';
+import { summarizeProject, generateProjectTags, getLatestIndustryUpdates, estimateProjectFeasibility } from './services/geminiService';
 
 export default function App() {
   const [hoursPerWeek, setHoursPerWeek] = useState(10);
@@ -102,6 +104,9 @@ export default function App() {
 
       <main className="max-w-6xl mx-auto px-6 py-16 space-y-24">
         
+        {/* Latest Industry Updates */}
+        <LatestUpdates />
+
         {/* Why Section */}
         <section className="grid md:grid-cols-2 gap-12 items-center">
           <div>
@@ -385,6 +390,52 @@ function MilestoneCard({ milestone, calculateTimeline }: MilestoneCardProps) {
   );
 }
 
+const DIFFICULTY_TOOLTIPS: Record<string, string> = {
+  'Easy': "Suitable for beginners with minimal technical knowledge. Can be completed quickly with standard resources.",
+  'Medium': "Requires some experience and moderate technical skills. May need research or guidance.",
+  'Hard': "Demands advanced skills and significant experience. Requires careful planning and substantial time investment.",
+  'Expert': "Requires specialized expertise and extensive experience. Complex problem-solving and significant resources needed."
+};
+
+function DifficultyBadge({ difficulty }: { difficulty: string }) {
+  const [showTooltip, setShowTooltip] = useState(false);
+  const timeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+
+  const handleMouseEnter = () => {
+    timeoutRef.current = setTimeout(() => setShowTooltip(true), 250);
+  };
+
+  const handleMouseLeave = () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    setShowTooltip(false);
+  };
+
+  return (
+    <div className="relative flex items-center" onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}>
+      <span className={`text-xs font-bold px-2 py-1 rounded cursor-help ${
+        difficulty === 'Easy' ? 'text-emerald-400 bg-emerald-400/10' :
+        difficulty === 'Medium' ? 'text-blue-400 bg-blue-400/10' :
+        difficulty === 'Hard' ? 'text-amber-400 bg-amber-400/10' :
+        'text-rose-400 bg-rose-400/10'
+      }`}>
+        {difficulty}
+      </span>
+      <AnimatePresence>
+        {showTooltip && (
+          <motion.div
+            initial={{ opacity: 0, y: 5 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 5 }}
+            className="absolute bottom-full right-0 mb-2 w-48 p-3 bg-slate-800 text-slate-200 text-[10px] leading-relaxed rounded-lg shadow-xl border border-slate-700 z-50"
+          >
+            {DIFFICULTY_TOOLTIPS[difficulty] || "Unknown difficulty"}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 interface ProjectCardProps {
   key?: React.Key;
   project: Project;
@@ -400,6 +451,9 @@ function ProjectCard({ project }: ProjectCardProps) {
   const [suggestedTags, setSuggestedTags] = useState<string[]>([]);
   const [isGeneratingTags, setIsGeneratingTags] = useState(false);
   const [showTagSuggestions, setShowTagSuggestions] = useState(false);
+
+  const [feasibility, setFeasibility] = useState<{score: number, explanation: string} | null>(null);
+  const [isCheckingFeasibility, setIsCheckingFeasibility] = useState(false);
 
   const [isMilestonesExpanded, setIsMilestonesExpanded] = useState(false);
 
@@ -421,6 +475,14 @@ function ProjectCard({ project }: ProjectCardProps) {
     setSuggestedTags(result.filter(t => !tags.includes(t)));
     setShowTagSuggestions(true);
     setIsGeneratingTags(false);
+  };
+
+  const handleCheckFeasibility = async () => {
+    setIsCheckingFeasibility(true);
+    const duration = project.milestones.length > 0 ? `${project.milestones.length * 2} weeks` : "Unknown";
+    const result = await estimateProjectFeasibility(project.difficulty, duration, tags);
+    setFeasibility(result);
+    setIsCheckingFeasibility(false);
   };
 
   const addTag = (tag: string) => {
@@ -446,7 +508,7 @@ function ProjectCard({ project }: ProjectCardProps) {
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      className="bg-slate-900 rounded-2xl border border-slate-800 overflow-hidden flex flex-col h-full hover:border-blue-500/30 transition-all group"
+      className="bg-slate-900 rounded-2xl border border-slate-800 overflow-hidden flex flex-col h-full hover:border-blue-500/30 transition-all duration-300 hover:-translate-y-1 hover:scale-[1.02] hover:shadow-2xl hover:shadow-blue-500/10 group"
     >
       {/* Header */}
       <div className="p-6 border-b border-slate-800">
@@ -459,14 +521,7 @@ function ProjectCard({ project }: ProjectCardProps) {
             {project.category}
           </span>
           <div className="flex items-center gap-3">
-            <span className={`text-xs font-bold px-2 py-1 rounded ${
-              project.difficulty === 'Easy' ? 'text-emerald-400 bg-emerald-400/10' :
-              project.difficulty === 'Medium' ? 'text-blue-400 bg-blue-400/10' :
-              project.difficulty === 'Hard' ? 'text-amber-400 bg-amber-400/10' :
-              'text-rose-400 bg-rose-400/10'
-            }`}>
-              {project.difficulty}
-            </span>
+            <DifficultyBadge difficulty={project.difficulty} />
           </div>
         </div>
         <h3 className="text-2xl font-bold mb-2 group-hover:text-blue-400 transition-colors">{project.title}</h3>
@@ -601,6 +656,48 @@ function ProjectCard({ project }: ProjectCardProps) {
         )}
       </div>
 
+      {/* Feasibility Section */}
+      <div className="px-6 py-4 border-b border-slate-800 bg-slate-950/30">
+        <div className="flex justify-between items-center mb-3">
+          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+            <Activity size={14} />
+            Feasibility Score
+          </h4>
+          {!feasibility && (
+            <button
+              onClick={handleCheckFeasibility}
+              disabled={isCheckingFeasibility}
+              className="text-[10px] font-bold text-blue-400 hover:text-blue-300 flex items-center gap-1 transition-colors disabled:opacity-50"
+            >
+              {isCheckingFeasibility ? <RefreshCw size={10} className="animate-spin" /> : <Sparkles size={10} />}
+              Analyze Risk
+            </button>
+          )}
+        </div>
+        {isCheckingFeasibility ? (
+          <div className="flex items-center gap-3 py-2">
+            <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.3s]" />
+            <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.15s]" />
+            <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" />
+            <span className="text-xs text-slate-500 italic">Analyzing factors...</span>
+          </div>
+        ) : feasibility ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="flex">
+                {[1, 2, 3, 4, 5].map(star => (
+                  <Star key={star} size={14} className={star <= feasibility.score ? "text-amber-400 fill-amber-400" : "text-slate-700"} />
+                ))}
+              </div>
+              <span className="text-xs font-bold text-slate-300">{feasibility.score}/5</span>
+            </div>
+            <p className="text-[10px] text-slate-400 leading-relaxed">{feasibility.explanation}</p>
+          </div>
+        ) : (
+          <p className="text-[10px] text-slate-600 italic">Click to estimate project feasibility and risk.</p>
+        )}
+      </div>
+
       {/* Progress Section */}
       <div className="px-6 py-4 flex-grow">
         <div className="flex justify-between items-end mb-2">
@@ -682,5 +779,94 @@ function ProjectCard({ project }: ProjectCardProps) {
         </AnimatePresence>
       </div>
     </motion.div>
+  );
+}
+
+function LatestUpdates() {
+  const [updates, setUpdates] = React.useState<{text: string, sources: any[]}>({ text: '', sources: [] });
+  const [isLoading, setIsLoading] = React.useState(false);
+  const [hasLoaded, setHasLoaded] = React.useState(false);
+
+  const fetchUpdates = async () => {
+    setIsLoading(true);
+    const result = await getLatestIndustryUpdates();
+    setUpdates(result);
+    setHasLoaded(true);
+    setIsLoading(false);
+  };
+
+  return (
+    <section className="bg-slate-900/50 rounded-3xl p-8 border border-slate-800 relative overflow-hidden">
+      <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/5 rounded-full blur-3xl pointer-events-none" />
+      
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-6 relative z-10">
+        <div>
+          <h2 className="text-2xl font-display font-bold flex items-center gap-2">
+            <Globe className="text-blue-500" />
+            Live Industry Updates
+          </h2>
+          <p className="text-slate-400 text-sm mt-1">Powered by Google Search Grounding</p>
+        </div>
+        
+        <button 
+          onClick={fetchUpdates}
+          disabled={isLoading}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded-xl border border-blue-500/30 transition-all disabled:opacity-50"
+        >
+          {isLoading ? <RefreshCw size={16} className="animate-spin" /> : <Sparkles size={16} />}
+          {hasLoaded ? "Refresh Updates" : "Fetch Latest News"}
+        </button>
+      </div>
+
+      {isLoading ? (
+        <div className="flex flex-col items-center justify-center py-12 space-y-4">
+          <div className="flex gap-2">
+            <div className="w-3 h-3 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.3s]" />
+            <div className="w-3 h-3 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.15s]" />
+            <div className="w-3 h-3 bg-blue-500 rounded-full animate-bounce" />
+          </div>
+          <p className="text-slate-500 text-sm animate-pulse">Searching the web for the latest GenAI trends in Fintech...</p>
+        </div>
+      ) : hasLoaded ? (
+        <motion.div 
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="space-y-6 relative z-10"
+        >
+          <div className="prose prose-invert prose-sm max-w-none">
+            <p className="text-slate-300 leading-relaxed whitespace-pre-wrap">{updates.text}</p>
+          </div>
+          
+          {updates.sources && updates.sources.length > 0 && (
+            <div className="pt-4 border-t border-slate-800">
+              <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3">Sources</h4>
+              <div className="flex flex-wrap gap-3">
+                {updates.sources.map((source: any, idx: number) => {
+                  const url = source.web?.uri;
+                  const title = source.web?.title;
+                  if (!url) return null;
+                  return (
+                    <a 
+                      key={idx}
+                      href={url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors text-xs text-slate-300 hover:text-blue-400 group"
+                    >
+                      <ExternalLink size={12} className="text-slate-500 group-hover:text-blue-400" />
+                      <span className="max-w-[200px] truncate">{title || new URL(url).hostname}</span>
+                    </a>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </motion.div>
+      ) : (
+        <div className="py-8 text-center border-2 border-dashed border-slate-800 rounded-xl">
+          <p className="text-slate-500">Click the button above to fetch real-time updates on Generative AI in the financial sector.</p>
+        </div>
+      )}
+    </section>
   );
 }
